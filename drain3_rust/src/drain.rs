@@ -9,6 +9,7 @@ use crate::storage::ClusterStorage;
 /// Maintains a prefix tree that groups log messages into clusters sharing a
 /// common template.  Tokens that vary across messages in the same cluster are
 /// replaced by a configurable wildcard string (`param_str`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Drain {
     max_node_depth: usize,
     sim_th: f64,
@@ -17,6 +18,7 @@ pub struct Drain {
     extra_delimiters: Vec<String>,
     param_str: String,
     parametrize_numeric_tokens: bool,
+    #[cfg_attr(feature = "serde", serde(skip))]
     masker: Option<LogMasker>,
     id_to_cluster: ClusterStorage,
     clusters_counter: usize,
@@ -152,9 +154,33 @@ impl Drain {
         self.id_to_cluster.len()
     }
 
+    /// Return all live clusters.
+    pub fn clusters(&self) -> Vec<&LogCluster> {
+        self.id_to_cluster.values()
+    }
+
     /// Public template-creation helper (mainly for testing).
     pub fn create_template_pub(&self, seq1: &[String], seq2: &[String]) -> Vec<String> {
         create_template(seq1, seq2, &self.param_str)
+    }
+
+    // -----------------------------------------------------------------------
+    // Serialization
+    // -----------------------------------------------------------------------
+
+    /// Serialize the Drain state to JSON bytes.
+    #[cfg(feature = "serde")]
+    pub fn to_json(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(self)
+    }
+
+    /// Deserialize a Drain instance from JSON bytes.
+    ///
+    /// Note: the masker field is not serialized (Regex can't be serialized).
+    /// Callers must re-attach a masker via `set_masker()` after loading.
+    #[cfg(feature = "serde")]
+    pub fn from_json(data: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(data)
     }
 
     // -----------------------------------------------------------------------

@@ -2,6 +2,7 @@
 ///
 /// Tracks a generalized template and the number of messages that matched it.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LogCluster {
     pub log_template_tokens: Vec<String>,
     pub cluster_id: usize,
@@ -35,6 +36,7 @@ impl std::fmt::Display for LogCluster {
 }
 
 /// Describes what changed when a log message was ingested.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UpdateType {
     ClusterCreated,
     ClusterTemplateChanged,

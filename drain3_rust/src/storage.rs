@@ -15,6 +15,55 @@ pub enum ClusterStorage {
     Limited(LruCache<usize, LogCluster>),
 }
 
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct ClusterStorageSurrogate {
+        max_clusters: Option<usize>,
+        entries: Vec<(usize, LogCluster)>,
+    }
+
+    impl Serialize for ClusterStorage {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let surrogate = match self {
+                ClusterStorage::Unlimited(map) => ClusterStorageSurrogate {
+                    max_clusters: None,
+                    entries: map.iter().map(|(&k, v)| (k, v.clone())).collect(),
+                },
+                ClusterStorage::Limited(cache) => ClusterStorageSurrogate {
+                    max_clusters: Some(cache.cap().get()),
+                    entries: cache.iter().map(|(&k, v)| (k, v.clone())).collect(),
+                },
+            };
+            surrogate.serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ClusterStorage {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let surrogate = ClusterStorageSurrogate::deserialize(deserializer)?;
+            match surrogate.max_clusters {
+                None => {
+                    let map: HashMap<usize, LogCluster> =
+                        surrogate.entries.into_iter().collect();
+                    Ok(ClusterStorage::Unlimited(map))
+                }
+                Some(cap) => {
+                    let mut cache =
+                        LruCache::new(NonZeroUsize::new(cap).unwrap());
+                    for (k, v) in surrogate.entries {
+                        cache.put(k, v);
+                    }
+                    Ok(ClusterStorage::Limited(cache))
+                }
+            }
+        }
+    }
+}
+
 impl ClusterStorage {
     pub fn new(max_clusters: Option<usize>) -> Self {
         match max_clusters {

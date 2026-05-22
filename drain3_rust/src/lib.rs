@@ -5,7 +5,7 @@ pub mod node;
 pub mod parse_event;
 pub mod pipeline;
 pub mod similarity;
-mod storage;
+pub mod storage;
 
 #[cfg(test)]
 mod bench;
