@@ -223,9 +223,12 @@ async fn ingest(
     };
     let ingested = new_lines.len();
 
+    // Fast path: DashMap::get only takes a read lock on the shard, maximizing concurrency
+    // for existing sessions.
     let entry = if let Some(e) = state.sessions.get(&id) {
         e.clone()
     } else {
+        // Slow path: DashMap::entry takes a write lock on the shard to insert.
         state.sessions.entry(id.clone()).or_insert_with(|| std::sync::Arc::new(SessionEntry::new())).value().clone()
     };
 
@@ -233,7 +236,10 @@ async fn ingest(
     for l in new_lines {
         index.push(l);
     }
-    *entry.last_touch.lock().unwrap() = Instant::now();
+    {
+        let mut lock = entry.last_touch.lock().unwrap_or_else(|e| e.into_inner());
+        *lock = Instant::now();
+    }
     let total = index.len();
 
     tracing::info!(session = %id, ingested, total, "ingest");
