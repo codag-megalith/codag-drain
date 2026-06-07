@@ -22,12 +22,14 @@ async fn ttl_sweeper(state: AppState) {
     loop {
         iv.tick().await;
         let now = Instant::now();
-        let mut sessions = state.sessions.write().await;
-        let before = sessions.len();
-        sessions.retain(|_, e| now.duration_since(e.last_touch) < SESSION_TTL);
-        let evicted = before - sessions.len();
+        let before = state.sessions.len();
+        state.sessions.retain(|_, e| {
+            let last_touch = *e.last_touch.lock().unwrap();
+            now.duration_since(last_touch) < SESSION_TTL
+        });
+        let evicted = before - state.sessions.len();
         if evicted > 0 {
-            tracing::info!(evicted, remaining = sessions.len(), "ttl sweep");
+            tracing::info!(evicted, remaining = state.sessions.len(), "ttl sweep");
         }
     }
 }

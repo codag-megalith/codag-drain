@@ -5,12 +5,12 @@
 //! lives entirely in memory; sessions idle longer than [`SESSION_TTL`] are
 //! evicted by a background task (see `main.rs`).
 
-use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codag_drain::{TemplateIndex, TemplaterConfig};
+use dashmap::DashMap;
 use tokio::sync::{RwLock, Semaphore};
 
 pub use codag_drain::{parse_body, parse_json_line, parse_line, BodyFormat};
@@ -67,8 +67,8 @@ fn env_u64(name: &str, default: u64) -> u64 {
 /// One live session: a streaming index plus its last-touch timestamp.
 #[derive(Debug)]
 pub struct SessionEntry {
-    pub index: TemplateIndex,
-    pub last_touch: Instant,
+    pub index: RwLock<TemplateIndex>,
+    pub last_touch: std::sync::Mutex<Instant>,
 }
 
 impl SessionEntry {
@@ -80,8 +80,8 @@ impl SessionEntry {
 impl Default for SessionEntry {
     fn default() -> Self {
         SessionEntry {
-            index: TemplateIndex::new(TemplaterConfig::default()),
-            last_touch: Instant::now(),
+            index: RwLock::new(TemplateIndex::new(TemplaterConfig::default())),
+            last_touch: std::sync::Mutex::new(Instant::now()),
         }
     }
 }
@@ -89,7 +89,7 @@ impl Default for SessionEntry {
 /// Shared, cloneable application state.
 #[derive(Clone)]
 pub struct AppState {
-    pub sessions: Arc<RwLock<HashMap<String, SessionEntry>>>,
+    pub sessions: Arc<DashMap<String, Arc<SessionEntry>>>,
     pub limits: Arc<Limits>,
     pub template_slots: Arc<Semaphore>,
     pub auth_token: Option<Arc<str>>,
@@ -100,7 +100,7 @@ impl AppState {
         let limits = Limits::from_env();
         let max_inflight = limits.max_inflight;
         AppState {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(DashMap::new()),
             limits: Arc::new(limits),
             template_slots: Arc::new(Semaphore::new(max_inflight)),
             auth_token: auth_token_from_env(),
