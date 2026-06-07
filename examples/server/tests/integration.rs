@@ -4,11 +4,11 @@
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode};
 use http_body_util::BodyExt;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::Semaphore;
 use tower::ServiceExt;
+use dashmap::DashMap;
 
 use codag_drain::{template_logs, LogLine, TemplaterConfig};
 use codag_drain_server::routes;
@@ -48,7 +48,7 @@ fn limited_app(limits: Limits) -> axum::Router {
 fn state_with_limits(limits: Limits) -> AppState {
     let max_inflight = limits.max_inflight;
     AppState {
-        sessions: Arc::new(RwLock::new(HashMap::new())),
+        sessions: Arc::new(DashMap::new()),
         limits: Arc::new(limits),
         template_slots: Arc::new(Semaphore::new(max_inflight)),
         auth_token: Some(Arc::<str>::from(TEST_TOKEN)),
@@ -105,7 +105,7 @@ async fn v1_routes_fail_closed_without_configured_auth_token() {
     let limits = Limits::from_env();
     let max_inflight = limits.max_inflight;
     let state = AppState {
-        sessions: Arc::new(RwLock::new(HashMap::new())),
+        sessions: Arc::new(DashMap::new()),
         limits: Arc::new(limits),
         template_slots: Arc::new(Semaphore::new(max_inflight)),
         auth_token: None,
@@ -345,7 +345,7 @@ async fn concurrency_overflow_returns_429() {
         template_timeout: Duration::from_secs(1),
     };
     let state = AppState {
-        sessions: Arc::new(RwLock::new(HashMap::new())),
+        sessions: Arc::new(DashMap::new()),
         limits: Arc::new(limits),
         template_slots: Arc::new(Semaphore::new(1)),
         auth_token: Some(Arc::<str>::from(TEST_TOKEN)),

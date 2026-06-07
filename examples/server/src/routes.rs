@@ -223,13 +223,24 @@ async fn ingest(
     };
     let ingested = new_lines.len();
 
-    let mut sessions = state.sessions.write().await;
-    let entry = sessions.entry(id.clone()).or_insert_with(SessionEntry::new);
+    // Fast path: DashMap::get only takes a read lock on the shard, maximizing concurrency
+    // for existing sessions.
+    let entry = if let Some(e) = state.sessions.get(&id) {
+        e.clone()
+    } else {
+        // Slow path: DashMap::entry takes a write lock on the shard to insert.
+        state.sessions.entry(id.clone()).or_insert_with(|| std::sync::Arc::new(SessionEntry::new())).value().clone()
+    };
+
+    let mut index = entry.index.write().await;
     for l in new_lines {
-        entry.index.push(l);
+        index.push(l);
     }
-    entry.last_touch = Instant::now();
-    let total = entry.index.len();
+    {
+        let mut lock = entry.last_touch.lock().unwrap_or_else(|e| e.into_inner());
+        *lock = Instant::now();
+    }
+    let total = index.len();
 
     tracing::info!(session = %id, ingested, total, "ingest");
     Json(json!({ "ingested": ingested, "total": total })).into_response()
@@ -244,11 +255,12 @@ async fn templates(
         Ok(cfg) => cfg,
         Err(resp) => return resp,
     };
-    let sessions = state.sessions.read().await;
-    let Some(entry) = sessions.get(&id) else {
-        return (StatusCode::NOT_FOUND, format!("no such session: {id}")).into_response();
+    let entry = match state.sessions.get(&id) {
+        Some(e) => e.clone(),
+        None => return (StatusCode::NOT_FOUND, format!("no such session: {id}")).into_response(),
     };
-    let result = entry.index.templates_with(&cfg);
+    let index = entry.index.read().await;
+    let result = index.templates_with(&cfg);
     if wants_json(q.format.as_deref()) {
         Json(result).into_response()
     } else {
