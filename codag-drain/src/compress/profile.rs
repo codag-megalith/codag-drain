@@ -18,6 +18,97 @@ use crate::compress::lex::{derive_lex_template, lex};
 use crate::compress::template::{derive_multi_template, regex_from_placeholder};
 use crate::compress::LogLine;
 
+/// Derive a canonical JSON template when lexical token counts differ because
+/// free-form string values have different lengths. Returns the raw value for
+/// each placeholder in member order so slot summaries do not depend on a regex
+/// matching canonicalized object-key order.
+fn derive_json_profile(messages: &[&str]) -> Option<(String, Vec<Vec<Option<String>>>)> {
+    let values: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|message| serde_json::from_str(message))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if values.is_empty() || (!values[0].is_object() && !values[0].is_array()) {
+        return None;
+    }
+
+    let mut raw_slots = vec![Vec::new(); values.len()];
+
+    fn scalar_text(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::String(value) => value.clone(),
+            _ => value.to_string(),
+        }
+    }
+
+    fn derive(
+        values: &[&serde_json::Value],
+        raw_slots: &mut [Vec<Option<String>>],
+    ) -> Option<String> {
+        match values[0] {
+            serde_json::Value::Object(first) => {
+                let objects: Vec<_> = values
+                    .iter()
+                    .map(|value| value.as_object())
+                    .collect::<Option<_>>()?;
+                if objects
+                    .iter()
+                    .any(|object| object.len() != first.len() || object.keys().ne(first.keys()))
+                {
+                    return None;
+                }
+
+                let mut fields = Vec::with_capacity(first.len());
+                for key in first.keys() {
+                    let children: Vec<_> = objects.iter().map(|object| &object[key]).collect();
+                    fields.push(format!(
+                        "{}:{}",
+                        serde_json::to_string(key).ok()?,
+                        derive(&children, raw_slots)?
+                    ));
+                }
+                Some(format!("{{{}}}", fields.join(",")))
+            }
+            serde_json::Value::Array(first) => {
+                let arrays: Vec<_> = values
+                    .iter()
+                    .map(|value| value.as_array())
+                    .collect::<Option<_>>()?;
+                if arrays.iter().any(|array| array.len() != first.len()) {
+                    return None;
+                }
+
+                let mut items = Vec::with_capacity(first.len());
+                for index in 0..first.len() {
+                    let children: Vec<_> = arrays.iter().map(|array| &array[index]).collect();
+                    items.push(derive(&children, raw_slots)?);
+                }
+                Some(format!("[{}]", items.join(",")))
+            }
+            first => {
+                let same = values.iter().all(|value| *value == first);
+                if same {
+                    serde_json::to_string(first).ok()
+                } else {
+                    for (row, value) in raw_slots.iter_mut().zip(values.iter()) {
+                        row.push(Some(scalar_text(value)));
+                    }
+                    Some(match first {
+                        serde_json::Value::String(_) => {
+                            format!("\"{}\"", crate::compress::template::PLACEHOLDER)
+                        }
+                        _ => crate::compress::template::PLACEHOLDER.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    let refs: Vec<_> = values.iter().collect();
+    let template = derive(&refs, &mut raw_slots)?;
+    Some((template, raw_slots))
+}
+
 /// `NUM = re.compile(r"-?\d+(?:\.\d+)?")` - first numeric substring of a slot.
 fn num_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -90,15 +181,27 @@ impl Profile {
             // and alpha-only variables are visible without domain regexes.
             let a_raw = &lines[members[0]].message;
             let members_lex: Vec<_> = members.iter().map(|&m| lex(&lines[m].message)).collect();
+            let mut json_raw_slots = None;
             let template = match derive_lex_template(a_raw, &members_lex) {
                 Some(t) => t,
-                None => {
-                    let members_norm: Vec<Vec<String>> = members
+                None => match derive_json_profile(
+                    &members
                         .iter()
-                        .map(|&m| whitespace_tokens(&lines[m].message))
-                        .collect();
-                    derive_multi_template(a_raw, &members_norm)
-                }
+                        .map(|&m| lines[m].message.as_str())
+                        .collect::<Vec<_>>(),
+                ) {
+                    Some((template, raw_slots)) => {
+                        json_raw_slots = Some(raw_slots);
+                        template
+                    }
+                    None => {
+                        let members_norm: Vec<Vec<String>> = members
+                            .iter()
+                            .map(|&m| whitespace_tokens(&lines[m].message))
+                            .collect();
+                        derive_multi_template(a_raw, &members_norm)
+                    }
+                },
             };
             let regex = regex_from_placeholder(&template);
             let slot_count = template
@@ -112,9 +215,12 @@ impl Profile {
             // present_count[slot] = number of members with a captured (non-None) value
             let mut present_count: Vec<usize> = vec![0; slot_count];
 
-            for &m in members {
+            for (member_position, &m) in members.iter().enumerate() {
                 let msg = &lines[m].message;
-                let caps = capture_slots(regex.as_ref(), msg, slot_count);
+                let caps = json_raw_slots
+                    .as_ref()
+                    .map(|slots| slots[member_position].clone())
+                    .unwrap_or_else(|| capture_slots(regex.as_ref(), msg, slot_count));
                 for (si, cap) in caps.iter().enumerate() {
                     if let Some(raw) = cap {
                         present_count[si] += 1;
