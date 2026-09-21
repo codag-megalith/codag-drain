@@ -158,7 +158,9 @@ fn drain_tokens(line: &str, mode: DrainTokenMode, masker: &LogMasker) -> Vec<Str
     match mode {
         DrainTokenMode::Whitespace => whitespace_tokens(line, masker),
         DrainTokenMode::CompactFallback => {
-            if use_compact_lexing(line) {
+            if let Some(tokens) = json_tokens(line) {
+                tokens
+            } else if use_compact_lexing(line) {
                 lex(line).into_iter().map(|t| t.text).collect()
             } else {
                 whitespace_tokens(line, masker)
@@ -166,6 +168,43 @@ fn drain_tokens(line: &str, mode: DrainTokenMode, masker: &LogMasker) -> Vec<Str
         }
         DrainTokenMode::Delimited => delimited_tokens(line, masker),
     }
+}
+
+/// Tokenize JSON by its parsed structure, keeping every scalar value in one
+/// token. In particular, spaces inside a JSON string must not change the token
+/// count: prompts, stack traces, and other free-form fields commonly grow while
+/// the surrounding event schema remains stable.
+fn json_tokens(line: &str) -> Option<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if !value.is_object() && !value.is_array() {
+        return None;
+    }
+
+    fn append(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    out.push(format!("key:{key}"));
+                    append(value, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                out.push("[array]".to_string());
+                for item in items {
+                    append(item, out);
+                }
+                out.push("[/array]".to_string());
+            }
+            serde_json::Value::String(value) => out.push(format!("string:{value}")),
+            serde_json::Value::Number(value) => out.push(format!("number:{value}")),
+            serde_json::Value::Bool(value) => out.push(format!("bool:{value}")),
+            serde_json::Value::Null => out.push("null".to_string()),
+        }
+    }
+
+    let mut tokens = Vec::new();
+    append(&value, &mut tokens);
+    Some(tokens)
 }
 
 fn use_compact_lexing(line: &str) -> bool {
@@ -462,6 +501,18 @@ mod tests {
     #[test]
     fn member_indices_ascending() {
         let lines = lines_of(&["x same", "x same", "x same"]);
+        let groups = DrainGrouper::default().group(&lines);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].member_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn drain_groups_json_with_whitespace_inside_string_values() {
+        let lines = lines_of(&[
+            r#"{"timestamp":1,"data":{"type":"llm.prediction.input","input":"hello world","model":"qwen"}}"#,
+            r#"{"timestamp":2,"data":{"type":"llm.prediction.input","input":"hello world with a longer history","model":"qwen"}}"#,
+            r#"{"timestamp":3,"data":{"type":"llm.prediction.input","input":"another prompt containing many words","model":"qwen"}}"#,
+        ]);
         let groups = DrainGrouper::default().group(&lines);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].member_indices, vec![0, 1, 2]);

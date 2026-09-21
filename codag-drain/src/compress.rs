@@ -371,6 +371,36 @@ mod tests {
     }
 
     #[test]
+    fn templates_structured_json_with_free_form_text() {
+        let lines = vec![
+            line(
+                r#"{"timestamp":1,"data":{"type":"llm.prediction.input","input":"hello world","model":"qwen"}}"#,
+            ),
+            line(
+                r#"{"timestamp":2,"data":{"type":"llm.prediction.output","output":"hello there","tokens":2}}"#,
+            ),
+            line(
+                r#"{"timestamp":3,"data":{"type":"llm.prediction.input","input":"hello world with a much longer history","model":"qwen"}}"#,
+            ),
+            line(
+                r#"{"timestamp":4,"data":{"type":"llm.prediction.output","output":"a substantially longer answer with spaces","tokens":7}}"#,
+            ),
+        ];
+        let result = template_logs(&lines, &TemplaterConfig::default());
+        assert_eq!(result.template_count, 2);
+        assert_eq!(result.groups[0].count, 2);
+        assert_eq!(result.groups[1].count, 2);
+        assert!(result.groups[0]
+            .template
+            .contains(r#""type":"llm.prediction.input""#));
+        assert!(result.groups[0].template.contains(r#""input":"<*>""#));
+        assert!(result.groups[1]
+            .template
+            .contains(r#""type":"llm.prediction.output""#));
+        assert!(result.groups[1].template.contains(r#""output":"<*>""#));
+    }
+
+    #[test]
     fn alpha_enum_values_are_slot_metadata() {
         let states = [
             "Succeeded",
